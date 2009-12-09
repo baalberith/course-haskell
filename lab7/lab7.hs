@@ -37,8 +37,8 @@ fib n = fib (n - 2) >> fib (n - 1)
 
 -- problem 4
 	    
-data Request = Write Integer | ReadReq deriving (Show)
-data Response = Wrote | ReadRes Integer deriving (Show)
+data Request = Write Integer | ReadReq 
+data Response = Wrote | ReadRes Integer 
 type Dialog = [Response] -> [Request]
 
 fact :: Integer -> Integer
@@ -80,18 +80,17 @@ performIO dialog =
 b = "%%!PS\n%Orientation: Portrait\n%%BoundingBox: 0 0 595 842\n%%DocumentPaperSizes: a4\nnewpath\n"
 e = "stroke\nshowpage\n%%Trailer\n%EOF\n"
 
-
+curve = iterate vects [] where 
+  vects xs = concat [rot xs, [(0,1)], xs, [(1,0)], xs, [(0,-1)], rotneg xs]
+  rot xs = map (\(x, y) -> (y, x)) xs
+  rotneg xs = map (\(x, y) -> (-y, -x)) xs
+  
 hilbert :: Int -> IO ()
-hilbert n = putStrLn "0 0 moveto" >> hilbert' 0 0 595 0 0 595 n where
-  hilbert' x0 y0 xis xjs yis yjs 0 = 
-    putStr (show (x0+(xis+yis)/2)) >> putStr " " >> putStr (show (y0+(xjs+yjs)/2)) >> putStrLn " lineto"
-  hilbert' x0 y0 xis xjs yis yjs n = do 
-    hilbert' x0 y0 (yis/2) (yjs/2) (xis/2) (xjs/2) (n-1)
-    hilbert' (x0+xis/2) (y0+xjs/2) (xis/2) (xjs/2) (yis/2) (yjs/2) (n-1)
-    hilbert' (x0+xis/2+yis/2) (y0+xjs/2+yjs/2) (xis/2) (xjs/2) (yis/2) (yjs/2) (n-1)
-    hilbert' (x0+xis/2+yis) (y0+xjs/2+yjs) (-yis/2) (-yjs/2) (-xis/2) (-xjs/2) (n-1)
-
--- main = putStr b >> hilbert 7 >> putStr e
-
-
--- ptoblem 6
+hilbert n = putStr (show len) >> putStr " " >> putStr (show len) >> putStrLn " moveto" >> hilbert' (curve !! n) len len where
+  hilbert' [] x y = putStr (show x) >> putStr " " >> putStr (show y) >> putStrLn " lineto"
+  hilbert' ((x',y'):xs) x y = putStr (show (x + len * x')) >> putStr " " >> putStr (show (y + len * y')) >> putStrLn " lineto" >> hilbert' xs (x + len * x') (y + len * y')
+  len = 595 / ((len' n) + 2) where
+    len' 0 = 0
+    len' n = 2 * (len' (n - 1)) + 1
+    
+main = putStr b >> hilbert 8 >> putStr e
