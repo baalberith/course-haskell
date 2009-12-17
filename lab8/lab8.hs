@@ -28,21 +28,21 @@ type Generator = []
 
 place :: Int -> [Int] -> [Int] -> [Int] -> Generator [Int]
 place 0 _ _ _ = return []
-place i rs d1 d2 = do
+place n rs d1 d2 = do
   (q, rs') <- select rs
-  let q1 = q - i
-  let q2 = q + i
+  let q1 = q - n
+  let q2 = q + n
   guard (q1 `notElem` d1)
   guard (q2 `notElem` d2)
-  qs <- place (i - 1) rs' (q1:d1) (q2:d2)
+  qs <- place (n - 1) rs' (q1:d1) (q2:d2)
   return (q:qs) 
   
 select :: [a] -> Generator (a, [a])
 select [] = []
-select (a:x) = return (a, x) ++ do
-  (b, x') <- select x
-  return (b, a:x')
-  
+select (x:xs) = (x,xs) : do
+    (y, ys) <- select xs
+    return (y, x:ys)
+
 queens :: Int -> Generator [Int]
 queens n = place n [1..n] [] []
     
@@ -93,10 +93,17 @@ knight (n, m) start = solutions start [] where
 
 -- problem 4
 
-prod :: [Integer] -> Maybe Integer
-prod = foldr (\n p -> p >>= (\p' -> if n == 0 then Nothing else Just (n * p'))) (Just 1)
+prod :: [Integer] -> Integer
+prod xs = 
+  case prod' xs of
+    Nothing -> 0
+    Just n -> n 
+  where
+  prod' = foldr aux (Just 1) where
+    aux 0 _ = Nothing
+    aux n (Just p) = return (n * p)
 
-prod' :: [Integer] -> Integer
-prod' = foldr (\n p -> if n == 0 then 0 else n * p) 1
+product :: [Integer] -> Integer
+product = foldr (\n p -> if n == 0 then 0 else n * p) 1
 
   
