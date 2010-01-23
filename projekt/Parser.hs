@@ -7,27 +7,71 @@ import Numeric
 import Ratio
 import Complex
 import Data.Array
+import Control.Monad.Error
 
 import LispData
-
 
 
 symbol :: Parser Char
 symbol = oneOf "!$%&*+-/:<=>?@^_~"
 
+comment :: Parser Char
+comment = do 
+    char ';'
+    many (noneOf "\r\n")
+    return ' '
+
 spaces :: Parser ()
-spaces = skipMany1 space
+spaces = skipMany1 (comment <|> space)
+
+controlChar :: Parser Char
+controlChar =
+  do char '^'
+     c <- oneOf (['A' .. 'Z'] ++ "[\\]^_")
+     return (chr (ord c + 1 - ord 'A'))
+
+namedChar :: Parser Char
+namedChar = do 
+    name <- string "alarm"
+        <|> string "backspace"
+        <|> string "delete"
+        <|> string "esc"
+        <|> string "linefeed"
+        <|> try (string "newline")
+        <|> string "nul"
+        <|> string "page"
+        <|> string "return"
+        <|> string "space"
+        <|> string "tab"
+        <|> string "vtab"
+    case name of
+        "nul"       -> return (chr 0)
+        "alarm"     -> return (chr 7)
+        "backspace" -> return (chr 8)
+        "tab"       -> return '\t'
+        "linefeed"  -> return '\n'
+        "newline"   -> return '\n'
+        "vtab"      -> return (chr 11)
+        "page"      -> return (chr 12)
+        "return"    -> return '\r'
+        "esc"       -> return (chr 27)
+        "space"     -> return ' '
+        "delete"    -> return (chr 127)
 
 escapedChars :: Parser Char
 escapedChars = do 
     char '\\'
-    r <- oneOf "\\\"nrt" 
+    r <- oneOf "\\\"nrtabvf" 
     let res = case r of 
                 '\\' -> r
                 '"'  -> r
                 'n'  -> '\n'
                 'r'  -> '\r'
                 't'  -> '\t'
+                'a' -> chr 7
+                'b' -> chr 8
+                'v' -> chr 11
+                'f' -> chr 12
     return res
     
 parseDigital1 :: Parser LispVal
@@ -63,14 +107,14 @@ parseBin = do
         bin2dig s = bin2dig' 0 s where
             bin2dig' n "" = n
             bin2dig' n (x:xs) = 
-                let n' = 2 * n + toInteger (ord x - ord '0') 
+                let n' = 2 * n + toInteger (digitToInt x) 
                 in bin2dig' n' xs
     
-parseChar :: Parser String
+parseChar :: Parser Char
 parseChar = do
     r <- anyChar
     notFollowedBy alphaNum 
-    return [r]
+    return r
     
 parseVector :: Parser LispVal
 parseVector = do 
@@ -136,12 +180,8 @@ parseBool = do
 parseCharacter :: Parser LispVal
 parseCharacter = do
     try $ string "#\\"
-    value <- try (string "newline" <|> string "space") <|> parseChar
-    let res = case value of
-                "space" -> ' '
-                "newline" -> '\n'
-                otherwise -> head value
-    return $ Character res
+    value <- try controlChar <|> try namedChar <|> parseChar
+    return $ Character value
 
 parseList :: Parser LispVal
 parseList = do
@@ -192,8 +232,8 @@ parseExpr :: Parser LispVal
 parseExpr = parseAtom
         <|> parseString
         <|> try parseComplex
-        <|> try parseRatio
         <|> try parseFloat
+        <|> try parseRatio
         <|> try parseNumber 
         <|> try parseBool
         <|> try parseCharacter
@@ -204,8 +244,8 @@ parseExpr = parseAtom
         <|> try parseAnyList
         
 
-
-readExpr :: String -> String
+    
+readExpr :: String -> ThrowsError LispVal
 readExpr input = case parse parseExpr "lisp" input of
-    Left err -> "No match: " ++ show err
-    Right val -> "Found value: " ++ show val
+    Left err -> throwError $ Parser err
+    Right val -> return val
