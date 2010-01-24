@@ -6,6 +6,8 @@ import Ratio
 import Complex
 import Data.Array
 import Control.Monad.Error
+import Data.IORef
+import System.IO
 
 data LispVal = Atom String
              | String String
@@ -18,6 +20,10 @@ data LispVal = Atom String
              | List [LispVal]
              | DottedList [LispVal] LispVal
              | Vector (Array Int LispVal)
+             | PrimitiveFunc ([LispVal] -> ThrowsError LispVal)
+             | Func {params :: [String], vararg :: (Maybe String), body :: [LispVal], closure :: Env}
+             | IOFunc ([LispVal] -> IOThrowsError LispVal)
+             | Port Handle
 
 unwordsList :: [LispVal] -> String
 unwordsList = unwords . map showVal
@@ -60,6 +66,15 @@ showVal (Character ch) = showCharacters ch
 showVal (List contents) = showLists contents
 showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
 showVal (Vector v) = "#" ++ (show . List . elems) v 
+showVal (PrimitiveFunc _) = "<primitive>"
+showVal (Port _) = "<IO port>"
+showVal (IOFunc _) = "<IO primitive>"
+showVal (Func {params = args, vararg = varargs, body = body, closure = env}) = 
+  "(lambda (" ++ unwords (map show args) ++ 
+     (case varargs of 
+        Nothing -> ""
+        Just arg -> " . " ++ arg) ++ ") ...)" 
+
 
 instance Show LispVal where show = showVal
 
@@ -89,8 +104,22 @@ instance Error LispError where
 
 type ThrowsError = Either LispError
 
-trapError :: ThrowsError String -> ThrowsError String
+trapError :: IOThrowsError String -> IOThrowsError String
 trapError action = catchError action (return . show)
 
 extractValue :: ThrowsError String -> String
 extractValue (Right str) = str
+
+
+
+type IOThrowsError = ErrorT LispError IO
+
+liftThrows :: ThrowsError a -> IOThrowsError a
+liftThrows (Left err) = throwError err
+liftThrows (Right val) = return val
+
+runIOThrows :: IOThrowsError String -> IO String
+runIOThrows action = runErrorT (trapError action) >>= return . extractValue
+
+
+type Env = IORef [(String, IORef LispVal)]
