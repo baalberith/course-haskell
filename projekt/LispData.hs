@@ -2,20 +2,21 @@ module LispData where
 
 import Text.ParserCombinators.Parsec hiding (spaces)
 import Data.Char
-import Ratio
-import Complex
+-- import Ratio
+-- import Complex
 import Data.Array
 import Control.Monad.Error
 import Data.IORef
 import System.IO
+import Data.Maybe
 
 
 data LispVal = Atom String
              | String String
              | Number Integer
              | Float Double
-             | Ratio Rational
-             | Complex (Complex Double)
+--              | Ratio Rational
+--              | Complex (Complex Double)
              | Bool Bool
              | Character Char
              | List [LispVal]
@@ -31,8 +32,8 @@ showVal (Atom name) = name
 showVal (String contents) = "\"" ++ contents ++ "\""
 showVal (Number contents) = show contents
 showVal (Float contents) = show contents
-showVal (Ratio r) = (show . numerator) r ++ "/" ++ (show . denominator) r
-showVal (Complex w) = (show . realPart) w ++ "+" ++ (show . imagPart) w ++ "i"
+-- showVal (Ratio r) = (show . numerator) r ++ "/" ++ (show . denominator) r
+-- showVal (Complex w) = (show . realPart) w ++ "+" ++ (show . imagPart) w ++ "i"
 showVal (Bool True) = "#t"
 showVal (Bool False) = "#f"
 showVal (Character ch) = showCharacters ch 
@@ -48,21 +49,26 @@ instance Show LispVal where
     show = showVal
 
 
+-- showCharacters :: Char -> String
+-- showCharacters '\t' = "#\\tab"
+-- showCharacters '\n' = "#\\linefeed"
+-- showCharacters '\r' = "#\\return"
+-- showCharacters ' '  = "#\\space"
+-- showCharacters ch 
+--     | ch == chr 0   = "#\\nul"
+--     | ch == chr 7   = "#\\alarm"
+--     | ch == chr 8   = "#\\backspace"
+--     | ch == chr 11  = "#\\vtab"
+--     | ch == chr 12  = "#\\page"
+--     | ch == chr 27  = "#\\esc"
+--     | ch == chr 127 = "#\\delete"
+--     | isControl ch  = "#\\^" ++ [chr (ord ch + ord 'A' - 1)]
+--     | isPrint ch    = "#\\" ++ [ch]
+
 showCharacters :: Char -> String
-showCharacters '\t' = "#\\tab"
-showCharacters '\n' = "#\\linefeed"
-showCharacters '\r' = "#\\return"
+showCharacters '\n' = "#\\newline"
 showCharacters ' '  = "#\\space"
-showCharacters ch 
-    | ch == chr 0   = "#\\nul"
-    | ch == chr 7   = "#\\alarm"
-    | ch == chr 8   = "#\\backspace"
-    | ch == chr 11  = "#\\vtab"
-    | ch == chr 12  = "#\\page"
-    | ch == chr 27  = "#\\esc"
-    | ch == chr 127 = "#\\delete"
-    | isControl ch  = "#\\^" ++ [chr (ord ch + ord 'A' - 1)]
-    | isPrint ch    = "#\\" ++ [ch]
+showCharacters ch   = "#\\" ++ [ch]
 
 unwordsList :: [LispVal] -> String
 unwordsList = unwords . map showVal
@@ -73,6 +79,7 @@ showLists contents =
          [Atom "quote", cont] -> "'" ++ show cont
          [Atom "quasiquote", cont] -> "`" ++ show cont
          [Atom "unquote", cont] -> "," ++ show cont
+         [Atom "unquote-splicing", cont] -> ",@" ++ show cont
          cont -> "(" ++ unwordsList cont ++ ")"
      
 showFuncs :: LispVal -> String
@@ -142,11 +149,8 @@ nullEnv = newIORef []
 
 isBound :: Env -> String -> IO Bool
 isBound envRef var = do
-    env <- readIORef envRef 
-    let res = case lookup var env of
-                Just _ -> True
-                Nothing -> False
-    return res
+    env <- liftIO $ readIORef envRef 
+    return $ isJust (lookup var env)
 
 getVar :: Env -> String -> IOThrowsError LispVal
 getVar envRef var = do 
@@ -192,14 +196,3 @@ bindVars envRef bindings = do
         addBinding (var, value) = do 
             ref <- newIORef value
             return (var, ref)
-
-
-myRatPInf, myRatNInf, myRatNaN :: Rational
-myRatPInf = 1 % 0
-myRatNInf = (-1) % 0
-myRatNaN = 0 % 0
-
-myFltPInf, myFltNInf, myFltNaN :: Double
-myFltPInf = 1.0e99 ** 1.0e99    
-myFltNInf = -myFltPInf
-myFltNaN = sqrt (-1.0)
