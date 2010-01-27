@@ -9,6 +9,7 @@ import Control.Monad.Error
 import Data.IORef
 import System.IO
 
+
 data LispVal = Atom String
              | String String
              | Number Integer
@@ -25,34 +26,6 @@ data LispVal = Atom String
              | IOFunc ([LispVal] -> IOThrowsError LispVal)
              | Port Handle
 
-unwordsList :: [LispVal] -> String
-unwordsList = unwords . map showVal
-
-showLists :: [LispVal] -> String
-showLists contents =
-    case contents of
-         [Atom "quote", cont] -> "'" ++ show cont
-         [Atom "quasiquote", cont] -> "`" ++ show cont
-         [Atom "unquote", cont] -> "," ++ show cont
-         cont -> "(" ++ unwordsList cont ++ ")"
-     
-showCharacters :: Char -> String
-showCharacters ch 
-    | ch == chr 0   = "#\\nul"
-    | ch == chr 7   = "#\\alarm"
-    | ch == chr 8   = "#\\backspace"
-    | ch == '\t'    = "#\\tab"
-    | ch == '\n'    = "#\\linefeed"
-    | ch == chr 11  = "#\\vtab"
-    | ch == chr 12  = "#\\page"
-    | ch == '\r'    = "#\\return"
-    | ch == chr 27  = "#\\esc"
-    | ch == ' '     = "#\\space"
-    | ch == chr 127 = "#\\delete"
-    | isControl ch  = "#\\^" ++ [chr (ord ch + ord 'A' - 1)]
-    | isPrint ch    = "#\\" ++ [ch]
-    | otherwise     = [ch]
-
 showVal :: LispVal -> String
 showVal (Atom name) = name
 showVal (String contents) = "\"" ++ contents ++ "\""
@@ -67,18 +40,49 @@ showVal (List contents) = showLists contents
 showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
 showVal (Vector v) = "#" ++ (show . List . elems) v 
 showVal (PrimitiveFunc _) = "<primitive>"
-showVal (Port _) = "<IO port>"
+showVal func@(Func _ _ _ _) = showFuncs func
 showVal (IOFunc _) = "<IO primitive>"
-showVal (Func {params = args, vararg = varargs, body = body, closure = env}) = 
-  "(lambda (" ++ unwords (map show args) ++ 
-     (case varargs of 
-        Nothing -> ""
-        Just arg -> " . " ++ arg) ++ ") ...)" 
+showVal (Port _) = "<IO port>"
+
+instance Show LispVal where 
+    show = showVal
 
 
-instance Show LispVal where show = showVal
+showCharacters :: Char -> String
+showCharacters '\t' = "#\\tab"
+showCharacters '\n' = "#\\linefeed"
+showCharacters '\r' = "#\\return"
+showCharacters ' '  = "#\\space"
+showCharacters ch 
+    | ch == chr 0   = "#\\nul"
+    | ch == chr 7   = "#\\alarm"
+    | ch == chr 8   = "#\\backspace"
+    | ch == chr 11  = "#\\vtab"
+    | ch == chr 12  = "#\\page"
+    | ch == chr 27  = "#\\esc"
+    | ch == chr 127 = "#\\delete"
+    | isControl ch  = "#\\^" ++ [chr (ord ch + ord 'A' - 1)]
+    | isPrint ch    = "#\\" ++ [ch]
 
+unwordsList :: [LispVal] -> String
+unwordsList = unwords . map showVal
 
+showLists :: [LispVal] -> String
+showLists contents =
+    case contents of
+         [Atom "quote", cont] -> "'" ++ show cont
+         [Atom "quasiquote", cont] -> "`" ++ show cont
+         [Atom "unquote", cont] -> "," ++ show cont
+         cont -> "(" ++ unwordsList cont ++ ")"
+     
+showFuncs :: LispVal -> String
+showFuncs (Func {params = args, vararg = varargs}) = 
+    "(lambda (" ++ unwords (map show args) ++ 
+        (case varargs of 
+            Just arg -> " . " ++ arg 
+            Nothing -> "") 
+    ++ ") ...)" 
+        
 
 data LispError = NumArgs Integer [LispVal]
                | TypeMismatch String LispVal
@@ -87,7 +91,7 @@ data LispError = NumArgs Integer [LispVal]
                | NotFunction String String
                | UnboundVar String String
                | Default String
-               
+
 showError :: LispError -> String
 showError (UnboundVar message varname) = message ++ ": " ++ varname
 showError (BadSpecialForm message form) = message ++ ": " ++ show form
@@ -96,30 +100,106 @@ showError (NumArgs expected found) = "Expected " ++ show expected  ++ " args; fo
 showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected ++ ", found " ++ show found
 showError (Parser parseErr) = "Parse error at " ++ show parseErr
 
-instance Show LispError where show = showError
+instance Show LispError where 
+    show = showError
 
 instance Error LispError where
      noMsg = Default "An error has occurred"
      strMsg = Default
 
-type ThrowsError = Either LispError
 
-trapError :: IOThrowsError String -> IOThrowsError String
-trapError action = catchError action (return . show)
+type ThrowsError = Either LispError
 
 extractValue :: ThrowsError String -> String
 extractValue (Right str) = str
 
 
-
 type IOThrowsError = ErrorT LispError IO
+
+trapError :: IOThrowsError String -> IOThrowsError String
+trapError action = catchError action (return . show)
 
 liftThrows :: ThrowsError a -> IOThrowsError a
 liftThrows (Left err) = throwError err
 liftThrows (Right val) = return val
 
+-- runIOThrows :: IOThrowsError String -> IO String
+-- runIOThrows action = runErrorT (trapError action) >>= return . extractValue
+
 runIOThrows :: IOThrowsError String -> IO String
-runIOThrows action = runErrorT (trapError action) >>= return . extractValue
+runIOThrows action = do
+    traped <- runErrorT (trapError action) 
+    return $ extractValue traped
 
 
 type Env = IORef [(String, IORef LispVal)]
+
+nullEnv :: IO Env
+nullEnv = newIORef []
+
+-- isBound :: Env -> String -> IO Bool
+-- isBound envRef var = readIORef envRef >>= return . maybe False (const True) . lookup var
+
+isBound :: Env -> String -> IO Bool
+isBound envRef var = do
+    env <- readIORef envRef 
+    let res = case lookup var env of
+                Just _ -> True
+                Nothing -> False
+    return res
+
+getVar :: Env -> String -> IOThrowsError LispVal
+getVar envRef var = do 
+    env <- liftIO $ readIORef envRef
+    case lookup var env of
+        Just env' -> liftIO $ readIORef env'
+        Nothing -> throwError $ UnboundVar "Getting an unbound variable: " var
+        
+setVar :: Env -> String -> LispVal -> IOThrowsError LispVal
+setVar envRef var value = do 
+    env <- liftIO $ readIORef envRef
+    case lookup var env of
+        Just env' -> liftIO $ writeIORef env' value
+        Nothing -> throwError $ UnboundVar "Setting an unbound variable: " var
+    return value
+
+defineVar :: Env -> String -> LispVal -> IOThrowsError LispVal
+defineVar envRef var value = do 
+    alreadyDefined <- liftIO $ isBound envRef var 
+    if alreadyDefined 
+       then do
+           setVar envRef var value 
+           return value
+       else liftIO $ do 
+          valueRef <- newIORef value
+          env <- readIORef envRef
+          writeIORef envRef ((var, valueRef) : env)
+          return value
+          
+-- bindVars :: Env -> [(String, LispVal)] -> IO Env
+-- bindVars envRef bindings = readIORef envRef >>= extendEnv bindings >>= newIORef where 
+--     extendEnv bindings env = liftM (++ env) (mapM addBinding bindings)
+--     addBinding (var, value) = do 
+--         ref <- newIORef value
+--         return (var, ref)
+
+bindVars :: Env -> [(String, LispVal)] -> IO Env
+bindVars envRef bindings = do
+    env <- readIORef envRef 
+    eenv <- extendEnv env bindings
+    newIORef eenv where 
+        extendEnv env bindings = liftM (++ env) (mapM addBinding bindings)
+        addBinding (var, value) = do 
+            ref <- newIORef value
+            return (var, ref)
+
+
+myRatPInf, myRatNInf, myRatNaN :: Rational
+myRatPInf = 1 % 0
+myRatNInf = (-1) % 0
+myRatNaN = 0 % 0
+
+myFltPInf, myFltNInf, myFltNaN :: Double
+myFltPInf = 1.0e99 ** 1.0e99    
+myFltNInf = -myFltPInf
+myFltNaN = sqrt (-1.0)

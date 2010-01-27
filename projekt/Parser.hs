@@ -15,6 +15,13 @@ import LispData
 symbol :: Parser Char
 symbol = oneOf "!$%&*+-/:<=>?@^_~"
 
+
+hashbang :: Parser Char
+hashbang = do
+    string "#!" 
+    many (noneOf "\r\n")
+    return ' '
+
 comment :: Parser Char
 comment = do 
     char ';'
@@ -24,11 +31,12 @@ comment = do
 spaces :: Parser ()
 spaces = skipMany1 (comment <|> space)
 
+
 controlChar :: Parser Char
-controlChar =
-  do char '^'
-     c <- oneOf (['A' .. 'Z'] ++ "[\\]^_")
-     return (chr (ord c + 1 - ord 'A'))
+controlChar = do 
+    char '^'
+    c <- oneOf (['A' .. 'Z'] ++ "[\\]^_")
+    return (chr (ord c + 1 - ord 'A'))
 
 namedChar :: Parser Char
 namedChar = do 
@@ -74,6 +82,7 @@ escapedChars = do
                 'f' -> chr 12
     return res
     
+
 parseDigital1 :: Parser LispVal
 parseDigital1 = do 
     r <- many1 digit
@@ -90,14 +99,14 @@ parseHex = do
     try $ string "#x"
     r <- many1 hexDigit
     return $ Number (hex2dig r)
-    where hex2dig s = fst $ head (readHex s)
+    where hex2dig s = (fst . head) (readHex s)
     
 parseOct :: Parser LispVal
 parseOct = do 
     try $ string "#o"
     r <- many1 octDigit
     return $ Number (oct2dig r)
-    where oct2dig s = fst $ head (readOct s)
+    where oct2dig s = (fst . head) (readOct s)
     
 parseBin :: Parser LispVal
 parseBin = do 
@@ -109,20 +118,121 @@ parseBin = do
             bin2dig' n (x:xs) = 
                 let n' = 2 * n + toInteger (digitToInt x) 
                 in bin2dig' n' xs
-    
-parseChar :: Parser Char
-parseChar = do
-    r <- anyChar
-    notFollowedBy alphaNum 
-    return r
-    
-parseVector :: Parser LispVal
-parseVector = do 
-    arrayValues <- sepBy parseExpr spaces
-    let len = length arrayValues
-    return $ Vector (listArray (0, (len - 1)) arrayValues)
+                
+
+readBaseInt :: Integer -> String -> Integer
+readBaseInt b s = foldl ma 0 s where 
+    ma v1 v2 = b*v1 + toInteger (digitToInt v2)
+
+readBaseFrac :: Integer -> String -> Double
+readBaseFrac _ [] = 0.0
+readBaseFrac b s = r * foldr ma 0 s where
+    r = 1.0 / fromInteger b
+    ma v1 v2 = fromIntegral (digitToInt v1) + r*v2
+
+parseHdr :: Parser (Char, Integer)
+parseHdr = do 
+    b <- option 'd' (char '#' >> oneOf "bodx")
+    s <- option '+' (oneOf "+-")
+    let base = case b of
+                'b' -> 2
+                'o' -> 8
+                'd' -> 10
+                'x' -> 16
+    return (s, base)
+
+baseDigits :: Integer -> String
+baseDigits 2  = "01"
+baseDigits 8  = "01234567"
+baseDigits 10 = "0123456789"
+baseDigits 16 = "0123456789abcdef"
+
+int :: String
+int = "int"
 
 
+parseFloat1 :: Integer -> Parser (String,String)
+parseFloat1 b = do 
+    ip <- many1 (oneOf (baseDigits b))
+    fp <- option int (char '.' >> many (oneOf (baseDigits b)))
+    return (ip,fp)
+
+parseFloat2 :: Integer -> Parser (String,String)
+parseFloat2 b = do 
+    char '.'
+    fp <- many1 (oneOf (baseDigits b))
+    return ("0",fp)
+
+
+parseExp :: Integer -> Parser Integer
+parseExp b = do 
+    oneOf (if b == 16 then "x" else "ex")
+    s <- option '+' (oneOf "+-")
+    num <- many1 (oneOf (baseDigits b))
+    let e = readBaseInt b num
+    return (if s == '-' then (-e) else e)
+
+powi :: Integer -> Integer -> Integer
+powi b e | e == 0    = 1
+         | e < 0     = error "negative exponent in powi"
+         | even e    = powi (b*b) (e `quot` 2)
+         | otherwise = b * powi b (e - 1)
+
+pow :: Integer -> Integer -> Double
+pow b e =
+  if e >= 0 
+       then fromInteger (powi b e) 
+       else recip (fromInteger (powi b (-e)))
+       
+
+parseNumOrFlt :: Parser LispVal
+parseNumOrFlt = do 
+    (s, b) <- parseHdr
+    (ip, fp) <- parseFloat1 b <|> parseFloat2 b
+    e <- option 0 (parseExp b)
+    let fpi = if fp == int then "0" else fp
+        vf = pow b e * (fromInteger (readBaseInt b ip) + readBaseFrac b fpi)
+        vi = powi b e * readBaseInt b ip
+    if fp == int && e >= 0
+        then return (Number (if s == '-' then (-vi) else vi))
+        else return (Float (if s == '-' then (-vf) else vf))
+
+parseRat :: Parser LispVal
+parseRat = do 
+    (s, b) <- parseHdr
+    nstr <- many1 (oneOf (baseDigits b))
+    char '/'
+    dstr <- many1 (oneOf (baseDigits b))
+    let num = readBaseInt b nstr
+        den = readBaseInt b dstr
+        ns = if s == '-' then (-num) else num
+        val = if den /= 0
+                then ns % den
+                 else if ns > 0
+                    then myRatPInf
+                    else if ns < 0
+                        then myRatNInf
+                        else myRatNaN
+    if denominator val == 1
+        then return (Number (numerator val))
+        else return (Ratio val)
+
+parseNaNInf :: Parser LispVal
+parseNaNInf = do 
+    val <- try (string "+nan.0")
+       <|> try (string "-nan.0")
+       <|> try (string "+inf.0")
+       <|> try (string "-inf.0")
+    case val of
+        "+nan.0" -> return (Float myFltNaN)
+        "-nan.0" -> return (Float myFltNaN)
+        "+inf.0" -> return (Float myFltPInf)
+        "-inf.0" -> return (Float myFltNInf)
+        
+
+parseNumOrFltOrRat :: Parser LispVal
+parseNumOrFltOrRat = try parseNaNInf <|> try parseRat <|> parseNumOrFlt
+    
 
 parseAtom :: Parser LispVal
 parseAtom = do 
@@ -148,7 +258,7 @@ parseFloat = do
     n <- many1 digit
     char '.'
     r <- many1 digit
-    let res = fst . head. readFloat $ n ++ "." ++ r
+    let res = (fst . head) (readFloat $ n ++ "." ++ r)
     return $ Float res
     
 parseRatio :: Parser LispVal
@@ -176,7 +286,13 @@ parseBool = do
                 't' -> Bool True
                 'f' -> Bool False
     return res
-    
+  
+parseChar :: Parser Char
+parseChar = do
+    r <- anyChar
+    notFollowedBy alphaNum 
+    return r
+
 parseCharacter :: Parser LispVal
 parseCharacter = do
     try $ string "#\\"
@@ -191,7 +307,9 @@ parseList = do
 parseDottedList :: Parser LispVal
 parseDottedList = do
     head <- endBy parseExpr spaces
-    tail <- char '.' >> spaces >> parseExpr
+    char '.'
+    spaces
+    tail <- parseExpr
     return $ DottedList head tail
     
 parseAnyList :: Parser LispVal
@@ -200,6 +318,19 @@ parseAnyList = do
     res <- try parseList <|> parseDottedList
     char ')'
     return res
+ 
+parseVector :: Parser LispVal
+parseVector = do 
+    arrayValues <- sepBy parseExpr spaces
+    let len = length arrayValues
+    return $ Vector (listArray (0, (len - 1)) arrayValues)
+    
+parseAnyVector :: Parser LispVal
+parseAnyVector = do 
+    string "#("
+    x <- parseVector
+    char ')'
+    return x
     
 parseQuoted :: Parser LispVal
 parseQuoted = do
@@ -219,36 +350,76 @@ parseUnQuote = do
     res <- parseExpr
     return $ List [Atom "unquote", res]
     
-parseAnyVector :: Parser LispVal
-parseAnyVector = do 
-    string "#("
-    x <- parseVector
+parseUnQuoteSplicing :: Parser LispVal
+parseUnQuoteSplicing = do 
+    string ",@"
+    res <- parseExpr
+    return $ List [Atom "unquote-splicing", res]
+    
+parseAnyQuoted :: Parser LispVal
+parseAnyQuoted = try parseUnQuoteSplicing <|> try parseUnQuote <|> try parseQuasiQuoted <|> parseQuoted
+
+
+parseLstOrDtdLst :: Parser LispVal
+parseLstOrDtdLst = do 
+    char '('
+    skipMany space
+    hd <- sepEndBy parseExpr spaces
+    tl <- option (List []) (try (char '.' >> spaces >> parseExpr))
+    skipMany space
     char ')'
-    return x
+    if isl tl
+        then return (List (hd ++ unpl tl))
+        else if isdl tl
+            then return (DottedList (hd ++ unpdlh tl) (unpdlt tl))
+            else return (DottedList hd tl) where 
+    isl (List ((Atom sym):_)) = not (sym == "unquote" || sym == "unquote-splicing")
+    isl (List _) = True
+    isl _ = False
+    unpl (List l) = l
+    isdl (DottedList _ _) = True
+    isdl _ = False
+    unpdlh (DottedList h _) = h
+    unpdlt (DottedList _ t) = t
 
 
-
+-- parseExpr :: Parser LispVal
+-- parseExpr = parseAtom
+--         <|> parseString
+--         <|> try parseComplex
+--         <|> try parseFloat
+--         <|> try parseRatio
+--         <|> try parseNumber 
+--         <|> try parseBool
+--         <|> try parseCharacter
+--         <|> parseAnyQuoted
+--         <|> try parseAnyVector
+--         <|> try parseAnyList
+        
 parseExpr :: Parser LispVal
 parseExpr = parseAtom
         <|> parseString
         <|> try parseComplex
-        <|> try parseFloat
-        <|> try parseRatio
-        <|> try parseNumber 
+        <|> try parseNumOrFltOrRat
         <|> try parseBool
         <|> try parseCharacter
-        <|> parseQuoted
-        <|> parseQuasiQuoted
-        <|> parseUnQuote
+        <|> parseAnyQuoted
         <|> try parseAnyVector
-        <|> try parseAnyList
+        <|> try parseLstOrDtdLst
         
     
 readOrThrow :: Parser a -> String -> ThrowsError a
-readOrThrow parser input = case parse parser "lisp" input of
-    Left err -> throwError $ Parser err
-    Right val -> return val
+readOrThrow parser input = 
+    case parse parser "lisp" input of
+        Left err -> throwError $ Parser err
+        Right val -> return val
 
 
+readExpr :: String -> ThrowsError LispVal
 readExpr = readOrThrow parseExpr
-readExprList = readOrThrow (endBy parseExpr spaces)
+
+-- readExprList :: String -> ThrowsError [LispVal]
+-- readExprList = readOrThrow (endBy parseExpr spaces)
+
+readExprList :: String -> ThrowsError [LispVal]
+readExprList = readOrThrow (optional hashbang >> skipMany spaces >> endBy parseExpr (spaces <|> eof))
