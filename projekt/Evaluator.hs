@@ -17,11 +17,11 @@ makeVarargs :: LispVal -> Env -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
 makeVarargs varargs = makeFunc $ Just (show varargs)
 
         
-apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
-apply (PrimitiveFunc func) args = liftThrows $ func args
-apply (IOFunc func) args = func args
-apply func@(Func _ _ _ _) args = applyFunc func args
-apply func _ = throwError $ NotFunction "apply got non-function" (show func)
+apply :: EEnv -> LispVal -> [LispVal] -> IOThrowsError LispVal
+apply _ (PrimitiveFunc func) args = liftThrows $ func args
+apply _ (IOFunc func) args = func args
+apply eenv func@(Func _ _ _ _) args = applyFunc eenv func args
+apply _ func _ = throwError $ NotFunction "apply got non-function" (show func)
 
 -- applyFunc :: LispVal -> [LispVal] -> IOThrowsError LispVal       
 -- applyFunc (Func params varargs body closure) args = 
@@ -35,20 +35,21 @@ apply func _ = throwError $ NotFunction "apply got non-function" (show func)
 --                 Nothing -> return env     
 --             evalBody env = liftM last $ mapM (eval env) body 
 
-applyFunc :: LispVal -> [LispVal] -> IOThrowsError LispVal       
-applyFunc (Func params varargs body closure) args = 
+applyFunc :: EEnv -> LispVal -> [LispVal] -> IOThrowsError LispVal       
+applyFunc eenv (Func params varargs body closure) args = 
     if num params /= num args && varargs == Nothing
         then throwError $ NumArgs (num params) args
         else do
             let bindings = zip params args
-            eenv <- liftIO $ bindVars closure bindings >>= bindVarArgs varargs 
-            evalBody eenv where 
+            env' <- liftIO $ bindVars closure bindings >>= bindVarArgs varargs 
+            let eenv' = eeNewE eenv env'
+            evalBody eenv' where 
                 num = toInteger . length
                 remainingArgs = drop (length params) args
                 bindVarArgs arg env = case arg of
                     Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
                     Nothing -> return env     
-                evalBody env = liftM last $ mapM (eval env) body 
+                evalBody eenv = liftM last $ mapM (eval eenv) body 
                 
 
 specialForms :: [String]
@@ -60,47 +61,58 @@ specialForms = ["and", "apply", "begin", "case", "cond", "define",
                 "vector-set!", "reset", "shift ",
                 "trace", "dump-bindings"]
 
-isSpecialForm :: LispVal -> Bool
-isSpecialForm (Atom sym) = seek sym specialForms where 
-    seek _ [] = False
-    seek s (sf:sfs) = (s == sf) || seek s sfs
-isSpecialForm _ = False
+-- isSpecialForm :: LispVal -> Bool
+-- isSpecialForm (Atom sym) = seek sym specialForms where 
+--     seek _ [] = False
+--     seek s (sf:sfs) = (s == sf) || seek s sfs
+-- isSpecialForm _ = False
             
 
-eval :: Env -> LispVal -> IOThrowsError LispVal
-eval env (Atom id) = getVar env id
-eval env val@(String _) = return val
-eval env val@(Number _) = return val
-eval env val@(Float _) = return val
--- eval env val@(Ratio _) = return val
--- eval env val@(Complex _) = return val
-eval env val@(Bool _) = return val
-eval env val@(Character _) = return val
-eval env (List [Atom "quote", val]) = return val
-eval env (List [Atom "if", pred, conseq, alt]) = evalIf env pred conseq alt
-eval env (List [Atom "set!", Atom var, form]) = eval env form >>= setVar env var
-eval env (List [Atom "define", Atom var, form]) = eval env form >>= defineVar env var
-eval env (List (Atom "define" : List (Atom var : params) : body)) = makeNormalFunc env params body >>= defineVar env var
-eval env (List (Atom "define" : DottedList (Atom var : params) varargs : body)) = makeVarargs varargs env params body >>= defineVar env var
-eval env (List (Atom "lambda" : List params : body)) = makeNormalFunc env params body
-eval env (List (Atom "lambda" : DottedList params varargs : body)) = makeVarargs varargs env params body
-eval env (List (Atom "lambda" : varargs@(Atom _) : body)) = makeVarargs varargs env [] body
-eval env (List [Atom "load", String filename]) = load filename >>= liftM last . mapM (eval env)
-eval env list@(List _) = evalFunc env list
-eval env badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+eval :: EEnv -> LispVal -> IOThrowsError LispVal
+eval eenv (Atom id) = getVar (eeE eenv) id
+eval _ val@(String _) = return val
+eval _ val@(Number _) = return val
+eval _ val@(Float _) = return val
+-- eval _ val@(Ratio _) = return val
+-- eval _ val@(Complex _) = return val
+eval _ val@(Bool _) = return val
+eval _ val@(Character _) = return val
+eval _ (List [Atom "quote", val]) = return val 
+eval eenv (List [Atom "apply", fn, args]) = do { (List args') <- eval eenv args; evalFunc eenv $ List (fn:args') }
+eval eenv (List (Atom "eval" : args)) = mapM (eval eenv) args >>= mapML (eval eenv)
+eval eenv (List [Atom "if", pred, conseq, alt]) = evalIf eenv pred conseq alt
+eval eenv (List [Atom "set!", Atom var, form]) = eval eenv form >>= setVar (eeE eenv) var
+eval eenv (List [Atom "define", Atom var, form]) = eval eenv form >>= defineVar (eeE eenv) var
+eval eenv (List (Atom "define" : List (Atom var : params) : body)) = makeNormalFunc (eeE eenv) params body >>= defineVar (eeE eenv) var
+eval eenv (List (Atom "define" : DottedList (Atom var : params) varargs : body)) = makeVarargs varargs (eeE eenv) params body >>= defineVar (eeE eenv) var
+eval eenv (List (Atom "lambda" : List params : body)) = makeNormalFunc (eeE eenv) params body
+eval eenv (List (Atom "lambda" : DottedList params varargs : body)) = makeVarargs varargs (eeE eenv) params body
+eval eenv (List (Atom "lambda" : varargs@(Atom _) : body)) = makeVarargs varargs (eeE eenv) [] body
+eval eenv (List [Atom "load", String filename]) = load filename >>= liftM last . mapM (eval eenv)
+eval eenv list@(List _) = evalFunc eenv list
+eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
-evalIf :: Env -> LispVal -> LispVal -> LispVal -> IOThrowsError LispVal
-evalIf env pred conseq alt = do 
-    result <- eval env pred
+
+evalIf :: EEnv -> LispVal -> LispVal -> LispVal -> IOThrowsError LispVal
+evalIf eenv pred conseq alt = do 
+    result <- eval eenv pred
     case result of
-        Bool False -> eval env alt
-        otherwise -> eval env conseq
+        Bool False -> eval eenv alt
+        otherwise -> eval eenv conseq
 
-evalFunc :: Env -> LispVal -> IOThrowsError LispVal
-evalFunc env (List (function : args)) = do 
-    func <- eval env function
-    argVals <- mapM (eval env) args
-    apply func argVals
+evalFunc :: EEnv -> LispVal -> IOThrowsError LispVal
+evalFunc eenv (List (function : args)) = do 
+    func <- eval eenv function
+    argVals <- mapM (eval eenv) args
+    apply eenv func argVals
+    
+
+mapML :: Monad m => (a -> m LispVal) -> [a] -> m LispVal
+mapML fn lst = mapML' (List []) fn lst where 
+    mapML' acc _ [] = return acc
+    mapML' _ f (x:xs) = do 
+        res <- f x
+        mapML' res f xs
     
 
 -- primitiveBindings :: IO Env

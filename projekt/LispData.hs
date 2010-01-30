@@ -196,3 +196,19 @@ bindVars envRef bindings = do
         addBinding (var, value) = do 
             ref <- newIORef value
             return (var, ref)
+            
+
+data EEnv = EEnv Env Integer
+
+eeE :: EEnv -> Env
+eeE  (EEnv e _) = e
+
+eeQL :: EEnv -> Integer
+eeQL (EEnv _ q) = q
+
+eeNewE :: EEnv -> Env -> EEnv
+eeNewE  (EEnv _ q) e = EEnv e q
+
+eeQLIncr, eeQLDecr :: EEnv -> EEnv
+eeQLIncr (EEnv e q) = EEnv e (q + 1)
+eeQLDecr (EEnv e q) = EEnv e (q - 1)

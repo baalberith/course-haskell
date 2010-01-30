@@ -25,7 +25,8 @@ readPrompt prompt = do
 
 evalString :: Env -> String -> IO String
 evalString env expr = do
-    let evaled = (liftThrows $ readExpr expr) >>= eval env
+    let eenv = EEnv env 0
+    let evaled = (liftThrows $ readExpr expr) >>= eval eenv
     runIOThrows $ liftM show $ evaled
     
 evalAndPrint :: Env -> String -> IO ()
@@ -39,12 +40,20 @@ evalAndPrint env expr = do
 --     env <- primitiveBindings >>= flip bindVars [("args", List $ map String $ drop 1 args)] 
 --     (runIOThrows $ liftM show $ eval env (List [Atom "load", String (head args)])) >>= hPutStrLn stderr
 
+-- runOne :: [String] -> IO ()
+-- runOne args = do
+--     env <- primitiveBindings
+--     let args' = map String $ drop 1 args
+--     env' <- bindVars env [("args", List $ args')] 
+--     str <- runIOThrows $ liftM show $ eval env' (List [Atom "load", String (head args)])
+--     hPutStrLn stderr str
+
 runOne :: [String] -> IO ()
 runOne args = do
     env <- primitiveBindings
     let args' = map String $ drop 1 args
     env' <- bindVars env [("args", List $ args')] 
-    str <- runIOThrows $ liftM show $ eval env' (List [Atom "load", String (head args)])
+    str <- evalString env' $ "(load \"" ++ head args ++ "\")"
     hPutStrLn stderr str
 
 until_ :: Monad m => (a -> Bool) -> m a -> (a -> m ()) -> m ()

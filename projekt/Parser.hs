@@ -16,6 +16,7 @@ symbol :: Parser Char
 symbol = oneOf "!$%&*+-/:<=>?@^_~"
 
 
+
 -- hashbang :: Parser Char
 -- hashbang = do
 --     string "#!" 
@@ -207,7 +208,7 @@ parseCharacter = do
 
 parseList :: Parser LispVal
 parseList = do
-    res <- sepBy parseExpr spaces
+    res <- sepEndBy parseExpr spaces
     return $ List res 
 
 parseDottedList :: Parser LispVal
@@ -218,6 +219,28 @@ parseDottedList = do
     tail <- parseExpr
     return $ DottedList head tail
     
+-- parseAnyList :: Parser LispVal
+-- parseAnyList = do 
+--     char '('
+--     skipMany space
+--     hd <- sepEndBy parseExpr spaces
+--     tl <- option (List []) (try (char '.' >> spaces >> parseExpr))
+--     skipMany space
+--     char ')'
+--     if isl tl
+--         then return (List (hd ++ unpl tl))
+--         else if isdl tl
+--             then return (DottedList (hd ++ unpdlh tl) (unpdlt tl))
+--             else return (DottedList hd tl) where 
+--         isl (List ((Atom sym):_)) = not (sym == "unquote" || sym == "unquote-splicing")
+--         isl (List _) = True
+--         isl _ = False
+--         unpl (List l) = l
+--         isdl (DottedList _ _) = True
+--         isdl _ = False
+--         unpdlh (DottedList h _) = h
+--         unpdlt (DottedList _ t) = t
+    
 parseAnyList :: Parser LispVal
 parseAnyList = do
     char '('
@@ -226,21 +249,16 @@ parseAnyList = do
     skipMany space
     char ')'
     return res
- 
+    
 parseVector :: Parser LispVal
 parseVector = do 
-    arrayValues <- sepBy parseExpr spaces
-    let len = length arrayValues
-    return $ Vector (listArray (0, (len - 1)) arrayValues)
-    
-parseAnyVector :: Parser LispVal
-parseAnyVector = do 
     string "#("
     skipMany space
-    res <- parseVector
+    vals <- sepEndBy parseExpr spaces
     skipMany space
     char ')'
-    return res
+    let len = length vals
+    return $ Vector (listArray (0, (len - 1)) vals)
     
 parseQuoted :: Parser LispVal
 parseQuoted = do
@@ -279,7 +297,7 @@ parseExpr = parseAtom
         <|> try parseNumber 
         <|> try parseBool
         <|> try parseCharacter
-        <|> try parseAnyVector
+        <|> parseVector
         <|> parseAnyQuoted
         <|> parseAnyList
         
