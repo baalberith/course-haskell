@@ -163,8 +163,8 @@ writeProc [obj, Port port] = liftIO $ hPrint port obj >> (return $ Bool True)
 readContents :: [LispVal] -> IOThrowsError LispVal
 readContents [String filename] = liftM String $ liftIO $ readFile filename
 
-load :: String -> IOThrowsError [LispVal]
-load filename = (liftIO $ readFile filename) >>= liftThrows . readExprList
+load :: LispVal -> IOThrowsError [LispVal]
+load (String filename) = (liftIO $ readFile filename) >>= liftThrows . readExprList
 
 readAll :: [LispVal] -> IOThrowsError LispVal
-readAll [String filename] = liftM List $ load filename
+readAll [arg@(String filename)] = liftM List $ load arg

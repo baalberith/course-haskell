@@ -1,6 +1,7 @@
 module Evaluator where
 
 import Control.Monad.Error
+import Data.Array
 
 import LispData
 import Parser
@@ -70,6 +71,7 @@ specialForms = ["and", "apply", "begin", "case", "cond", "define",
 
 eval :: EEnv -> LispVal -> IOThrowsError LispVal
 eval eenv (Atom id) = getVar (eeE eenv) id
+
 eval _ val@(String _) = return val
 eval _ val@(Number _) = return val
 eval _ val@(Float _) = return val
@@ -77,19 +79,33 @@ eval _ val@(Float _) = return val
 -- eval _ val@(Complex _) = return val
 eval _ val@(Bool _) = return val
 eval _ val@(Character _) = return val
+
 eval _ (List [Atom "quote", val]) = return val 
+eval eenv (List [Atom "quasiquote", val]) = evalQQ (eeQLIncr eenv) val >>= liftSUnq
+eval _ (List (Atom "unquote" : args)) = throwError $ Default ("naked unquote form: " ++ show args)
+eval _ (List (Atom "unquote-splicing" : args)) = throwError $ Default ("naked unquote-splicing form: " ++ show args)
+
 eval eenv (List [Atom "apply", fn, args]) = do { (List args') <- eval eenv args; evalFunc eenv $ List (fn:args') }
 eval eenv (List (Atom "eval" : args)) = mapM (eval eenv) args >>= mapML (eval eenv)
+
+eval eenv (List (Atom "begin" : args)) = mapML (eval eenv) args
+
 eval eenv (List [Atom "if", pred, conseq, alt]) = evalIf eenv pred conseq alt
-eval eenv (List [Atom "set!", Atom var, form]) = eval eenv form >>= setVar (eeE eenv) var
-eval eenv (List [Atom "define", Atom var, form]) = eval eenv form >>= defineVar (eeE eenv) var
+                          
+eval eenv (List [Atom "set!", Atom var, val]) = eval eenv val >>= setVar (eeE eenv) var
+
+eval eenv (List [Atom "define", Atom var, val]) = eval eenv val >>= defineVar (eeE eenv) var
 eval eenv (List (Atom "define" : List (Atom var : params) : body)) = makeNormalFunc (eeE eenv) params body >>= defineVar (eeE eenv) var
 eval eenv (List (Atom "define" : DottedList (Atom var : params) varargs : body)) = makeVarargs varargs (eeE eenv) params body >>= defineVar (eeE eenv) var
+
 eval eenv (List (Atom "lambda" : List params : body)) = makeNormalFunc (eeE eenv) params body
 eval eenv (List (Atom "lambda" : DottedList params varargs : body)) = makeVarargs varargs (eeE eenv) params body
 eval eenv (List (Atom "lambda" : varargs@(Atom _) : body)) = makeVarargs varargs (eeE eenv) [] body
-eval eenv (List [Atom "load", String filename]) = load filename >>= liftM last . mapM (eval eenv)
+
+eval eenv (List [Atom "load", arg]) = eval eenv arg >>= load >>= liftM last . mapM (eval eenv)
+
 eval eenv list@(List _) = evalFunc eenv list
+
 eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
 
@@ -113,7 +129,90 @@ mapML fn lst = mapML' (List []) fn lst where
     mapML' _ f (x:xs) = do 
         res <- f x
         mapML' res f xs
+        
+
+isList (List _) = True
+isList _ = False
+
+getList :: LispVal -> [LispVal]
+getList (List l) = l
+
+isDL (DottedList _ _) = True
+isDL _ = False
+
+getDLh :: LispVal -> [LispVal]
+getDLh (DottedList h _) = h
+
+getDLt :: LispVal -> LispVal
+getDLt (DottedList _ t) = t
+
+unq :: String
+unq = " unq"
+
+liftLUnq :: [LispVal] -> [LispVal]
+liftLUnq lst = liftLUnq' [] lst where
+    liftLUnq' acc [] = acc
+    liftLUnq' acc (l@(List ((Atom sym):vals)):ls) =
+        if sym == unq
+            then liftLUnq' (acc ++ vals) ls
+            else liftLUnq' (acc ++ [l]) ls
+    liftLUnq' acc (l:ls) = liftLUnq' (acc ++ [l]) ls
     
+liftSUnq :: LispVal -> IOThrowsError LispVal
+liftSUnq l@(List ((Atom sym):vals)) =
+  if sym == unq
+     then if length vals == 1
+             then return (head vals)
+             else throwError $ Default "list unquote form in scalar context"
+     else return l
+liftSUnq v = return v
+
+evalQQ :: EEnv -> LispVal -> IOThrowsError LispVal
+evalQQ eenv (List [Atom "quasiquote", arg]) = do 
+    val <- evalQQ (eeQLIncr eenv) arg >>= liftSUnq
+    return (List [Atom "quasiquote", val])
+evalQQ eenv (List (Atom "unquote" : args)) =
+    if eeQL eenv == 1
+        then do 
+            vals <- mapM (eval eenv') args
+            return $ List (Atom unq : vals)
+        else do 
+            vals <- mapM (evalQQ eenv') args
+            return $ List (Atom "unquote" : liftLUnq vals)
+    where eenv' = eeQLDecr eenv
+evalQQ eenv (List (Atom "unquote-splicing" : args)) =
+    if eeQL eenv == 1
+        then do 
+            vals <- mapM (eval eenv') args
+            if isLL vals
+                then return $ List (Atom unq : peel vals)
+                else throwError $ Default ("bad unquote-splicing form: " ++ show args)
+        else do 
+            vals <- mapM (evalQQ eenv') args
+            return $ List (Atom "unquote-splicing" : liftLUnq vals)
+  where eenv' = eeQLDecr eenv
+        isLL [] = True
+        isLL ((List _):ls) = isLL ls
+        isLL _ = False
+        peel [] = []
+        peel ((List l):ls) = l ++ peel ls
+evalQQ eenv (List con) = do
+    vals <- mapM (evalQQ eenv) con 
+    return $ List (liftLUnq vals)
+evalQQ eenv (DottedList con cab) = do 
+    vals <- mapM (evalQQ eenv) con
+    tl <- evalQQ eenv cab >>= liftSUnq
+    let hd = liftLUnq vals
+    if isList tl
+        then return (List (hd ++ getList tl))
+        else if isDL tl
+            then return (DottedList (hd ++ getDLh tl) (getDLt tl))
+            else return (DottedList hd tl)
+evalQQ eenv (Vector v) = do 
+    vals <- mapM (evalQQ eenv) (elems v)
+    return $ Vector (listArray (bounds v) (liftLUnq vals))
+evalQQ _ val@_ = return val
+
 
 -- primitiveBindings :: IO Env
 -- primitiveBindings = nullEnv >>= (flip bindVars $ map (makeFunc IOFunc) ioPrimitives ++ map (makeFunc PrimitiveFunc) primitives) where 
