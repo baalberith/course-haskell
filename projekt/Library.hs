@@ -1,7 +1,10 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 module Library where
 
 import Control.Monad.Error
 import System.IO
+import Data.Array
 
 import LispData
 import Parser
@@ -34,6 +37,7 @@ primitives = [("+" , numericBinop (+)) ,
               ("string>?", strBoolBinop (>)),
               ("string<=?", strBoolBinop (<=)),
               ("string>=?", strBoolBinop (>=)),
+              ("eqv?", eqv),
               ("car", car),
               ("cdr", cdr),
               ("cons", cons),
@@ -108,6 +112,22 @@ string2number _          = Number 0
 number2string (Number n) = String $ show n
 number2string _          = String ""
 
+eqv :: [LispVal] -> ThrowsError LispVal
+eqv [(Bool v1), (Bool v2)] = return $ Bool $ v1 == v2
+eqv [(Character c1), (Character c2)] = return $ Bool $ c1 == c2
+eqv [(Number v1), (Number v2)] = return $ Bool $ v1 == v2
+eqv [(Float v1), (Float v2)] = return $ Bool $ v1 == v2 
+eqv [(String v1), (String v2)] = return $ Bool $ v1 == v2
+eqv [(Atom v1), (Atom v2)] = return $ Bool $ v1 == v2
+eqv [(DottedList l1 t1), (DottedList l2 t2)] = eqv [List (l1 ++ [t1]), List (l2 ++ [t2])]
+eqv [(List l1), (List l2)] = return $ Bool $ length l1 == length l2 && all eqvPair (zip l1 l2) 
+    where eqvPair (x1, x2) = case eqv [x1, x2] of
+                                Left err -> False
+                                Right (Bool val) -> val
+eqv [(Vector v1), (Vector v2)] = eqv [List (elems v1), List (elems v2)] 
+eqv _ = return $ Bool False
+eqv badArgList = throwError $ NumArgs 2 badArgList
+
 car :: [LispVal] -> ThrowsError LispVal
 car [List (x : xs)] = return x
 car [DottedList (x : xs) _] = return x
@@ -137,13 +157,8 @@ ioPrimitives = [("open-input-file", makePort ReadMode),
                 ("read", readProc),
                 ("write", writeProc),
                 ("read-contents", readContents),
-                ("read-all", readAll)
-                {-("apply", applyProc)-}]
+                ("read-all", readAll)]
  
-
--- applyProc :: [LispVal] -> IOThrowsError LispVal
--- applyProc [func, List args] = apply func args
--- applyProc (func : args) = apply func args
 
 makePort :: IOMode -> [LispVal] -> IOThrowsError LispVal
 makePort mode [String filename] = liftM Port $ liftIO $ openFile filename mode

@@ -85,15 +85,20 @@ eval eenv (List [Atom "quasiquote", val]) = evalQQ (eeQLIncr eenv) val >>= liftS
 eval _ (List (Atom "unquote" : args)) = throwError $ Default ("naked unquote form: " ++ show args)
 eval _ (List (Atom "unquote-splicing" : args)) = throwError $ Default ("naked unquote-splicing form: " ++ show args)
 
-eval eenv (List [Atom "apply", fn, args]) = do { (List args') <- eval eenv args; evalFunc eenv $ List (fn:args') }
+-- eval eenv (List [Atom "apply", fn, args]) = do { (List args') <- eval eenv args; evalFunc eenv $ List (fn:args') }
+eval eenv (List (Atom "apply" : fn : args)) = evalApply eenv fn args
 eval eenv (List (Atom "eval" : args)) = mapM (eval eenv) args >>= mapML (eval eenv)
 
-eval eenv (List (Atom "begin" : args)) = mapML (eval eenv) args
+eval eenv (List (Atom "and" : args)) = evalAnd eenv args (Bool True)
+eval eenv (List (Atom "or" : args)) = evalOr eenv args (Bool False)
 
 eval eenv (List [Atom "if", pred, conseq, alt]) = evalIf eenv pred conseq alt
+eval _ (List [Atom "cond"]) = return $ Bool False
+eval eenv (List (Atom "cond" : args)) = evalCond eenv args
+eval _ (List [Atom "case"]) = return $ Bool False
+eval eenv (List (Atom "case" : k : as)) = eval eenv k >>= evalCase eenv as
                           
 eval eenv (List [Atom "set!", Atom var, val]) = eval eenv val >>= setVar (eeE eenv) var
-
 eval eenv (List [Atom "define", Atom var, val]) = eval eenv val >>= defineVar (eeE eenv) var
 eval eenv (List (Atom "define" : List (Atom var : params) : body)) = makeNormalFunc (eeE eenv) params body >>= defineVar (eeE eenv) var
 eval eenv (List (Atom "define" : DottedList (Atom var : params) varargs : body)) = makeVarargs varargs (eeE eenv) params body >>= defineVar (eeE eenv) var
@@ -102,6 +107,10 @@ eval eenv (List (Atom "lambda" : List params : body)) = makeNormalFunc (eeE eenv
 eval eenv (List (Atom "lambda" : DottedList params varargs : body)) = makeVarargs varargs (eeE eenv) params body
 eval eenv (List (Atom "lambda" : varargs@(Atom _) : body)) = makeVarargs varargs (eeE eenv) [] body
 
+eval eenv (List (Atom "let" : List params : body)) = evalLet eenv Nothing params body
+eval eenv (List (Atom "let" : Atom name : List params : body)) = evalLet eenv (Just name) params body
+    
+eval eenv (List (Atom "begin" : args)) = mapML (eval eenv) args
 eval eenv (List [Atom "load", arg]) = eval eenv arg >>= load >>= liftM last . mapM (eval eenv)
 
 eval eenv list@(List _) = evalFunc eenv list
@@ -109,12 +118,99 @@ eval eenv list@(List _) = evalFunc eenv list
 eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
 
+evalApply :: EEnv -> LispVal -> [LispVal] -> IOThrowsError LispVal
+evalApply eenv fn args = do 
+    func <- eval eenv fn
+    argVals <- mapM (eval eenv) args
+    applyProc (func:argVals) where
+        applyProc [func, List args] = apply eenv func args
+        applyProc (func : args) = apply eenv func args
+        
+evalAnd :: EEnv -> [LispVal] -> LispVal -> IOThrowsError LispVal
+evalAnd _ [] ret = return ret
+evalAnd eenv (t:ts) _ = do 
+    result <- eval eenv t
+    case result of
+        Bool False -> return $ Bool False
+        _ -> evalAnd eenv ts result
+  
+evalOr :: EEnv -> [LispVal] -> LispVal -> IOThrowsError LispVal
+evalOr _ [] ret = return ret
+evalOr eenv (t:ts) _ = do 
+    result <- eval eenv t
+    case result of
+        Bool False -> evalOr eenv ts result
+        _ -> return result
+
 evalIf :: EEnv -> LispVal -> LispVal -> LispVal -> IOThrowsError LispVal
 evalIf eenv pred conseq alt = do 
     result <- eval eenv pred
     case result of
         Bool False -> eval eenv alt
         otherwise -> eval eenv conseq
+ 
+evalCond :: EEnv -> [LispVal] -> IOThrowsError LispVal
+evalCond _ [] = return $ Bool False
+evalCond eenv (cl:cls) = do 
+    (tst, val) <- evalCondClause eenv cl
+    if tst 
+        then return val 
+        else evalCond eenv cls where 
+    evalCondClause eenv (List (Atom "else" : as)) = do 
+        ret <- mapML (eval eenv) as
+        return (True, ret)
+    evalCondClause eenv (List (pr : as)) = do 
+        tst <- eval eenv pr
+        case tst of
+            Bool False -> return (False, Bool False)
+            _ -> do 
+                ret <- mapML (eval eenv) as
+                return (True, ret)
+    evalCondClause _ _ = return (False, Bool False)
+
+evalCase _ [] _ = return $ Bool False
+evalCase eenv (cl:cls) k = do 
+    (tst, val) <- evalCaseClause eenv cl k
+    if tst 
+        then return val 
+        else evalCase eenv cls k where
+    evalCaseClause eenv (List (Atom "else" : args)) _ = do 
+        ret <- mapML (eval eenv) args
+        return (True, ret)
+    evalCaseClause env (List (List vals : args)) k =
+        if valMatch k vals
+            then do 
+                ret <- mapML (eval eenv) args
+                return (True, ret)
+        else return (False, Bool False)
+    evalCaseClause _ _ _ = return (False, Bool False)
+    valMatch k (v:vs) = eqv' [k, v] || valMatch k vs
+    valMatch _ [] = False
+    
+-- evalLet :: EEnv -> Maybe String -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
+-- evalLet eenv maybeName params body = 
+--     case maybeName of
+--         Just name -> do
+--             env' <- liftIO (bindVars (eeE eenv) [(name, Bool False)])
+--             func <- makeNormalFunc env' (map exn params) body
+--             setVar env' name func
+--             mapM (eval eenv . exv) params >>= apply eenv func
+--         Nothing -> do
+--             func <- makeNormalFunc (eeE eenv) (map exn params) body
+--             mapM (eval eenv . exv) params >>= apply eenv func
+--     where exn (List [Atom var, _]) = Atom var
+--           exv (List [Atom _, val]) = val
+
+evalLet :: EEnv -> Maybe String -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
+evalLet eenv maybeName params body = do
+    func <- makeNormalFunc (eeE eenv) (map exn params) body
+    case maybeName of
+        Just name -> do
+            defineVar (eeE eenv) name func
+            mapM (eval eenv . exv) params >>= apply eenv func
+        Nothing -> mapM (eval eenv . exv) params >>= apply eenv func
+    where exn (List [Atom var, _]) = Atom var
+          exv (List [Atom _, val]) = val
 
 evalFunc :: EEnv -> LispVal -> IOThrowsError LispVal
 evalFunc eenv (List (function : args)) = do 
@@ -130,7 +226,6 @@ mapML fn lst = mapML' (List []) fn lst where
         res <- f x
         mapML' res f xs
         
-
 isList (List _) = True
 isList _ = False
 
@@ -212,6 +307,19 @@ evalQQ eenv (Vector v) = do
     vals <- mapM (evalQQ eenv) (elems v)
     return $ Vector (listArray (bounds v) (liftLUnq vals))
 evalQQ _ val@_ = return val
+
+eqv' :: [LispVal] -> Bool
+eqv' [(Bool v1), (Bool v2)] = v1 == v2
+eqv' [(Character c1), (Character c2)] = c1 == c2
+eqv' [(Number v1), (Number v2)] = v1 == v2
+eqv' [(Float v1), (Float v2)] = v1 == v2 
+eqv' [(String v1), (String v2)] = v1 == v2
+eqv' [(Atom v1), (Atom v2)] = v1 == v2
+eqv' [(DottedList l1 t1), (DottedList l2 t2)] = eqv' [List (l1 ++ [t1]), List (l2 ++ [t2])]
+eqv' [(List l1), (List l2)] = length l1 == length l2 && all eqvPair (zip l1 l2) 
+    where eqvPair (x1, x2) = eqv' [x1, x2]
+eqv' [(Vector v1), (Vector v2)] = (bounds v1) == (bounds v2) && eqv' [List (elems v1), List (elems v2)] 
+eqv' _ = False
 
 
 -- primitiveBindings :: IO Env
