@@ -1,69 +1,50 @@
 module LispData where
 
 import Text.ParserCombinators.Parsec hiding (spaces)
+import qualified Data.IntMap as IntMap
+
 import Data.Char
--- import Ratio
--- import Complex
-import Data.Array
-import Control.Monad.Error
 import Data.IORef
-import System.IO
 import Data.Maybe
 
+import Control.Monad.Error
+import System.IO
 
-data LispVal = Atom String
+
+data LispVal = Symbol String
              | String String
-             | Number Integer
+             | Integer Integer
              | Float Double
---              | Ratio Rational
---              | Complex (Complex Double)
              | Bool Bool
-             | Character Char
+             | Char Char
              | List [LispVal]
              | DottedList [LispVal] LispVal
-             | Vector (Array Int LispVal)
-             | PrimitiveFunc ([LispVal] -> ThrowsError LispVal)
+             | Vector Integer (IntMap.IntMap LispVal)
+             | Prim ([LispVal] -> ThrowsError LispVal)
              | Func {params :: [String], vararg :: (Maybe String), body :: [LispVal], closure :: Env}
-             | IOFunc ([LispVal] -> IOThrowsError LispVal)
+             | IOPrim ([LispVal] -> IOThrowsError LispVal)
              | Port Handle
 
+
 showVal :: LispVal -> String
-showVal (Atom name) = name
+showVal (Symbol name) = name
 showVal (String contents) = "\"" ++ contents ++ "\""
-showVal (Number contents) = show contents
+showVal (Integer contents) = show contents
 showVal (Float contents) = show contents
--- showVal (Ratio r) = (show . numerator) r ++ "/" ++ (show . denominator) r
--- showVal (Complex w) = (show . realPart) w ++ "+" ++ (show . imagPart) w ++ "i"
 showVal (Bool True) = "#t"
 showVal (Bool False) = "#f"
-showVal (Character ch) = showCharacters ch 
+showVal (Char ch) = showCharacters ch 
 showVal (List contents) = showLists contents
-showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
-showVal (Vector v) = "#" ++ (show . List . elems) v 
-showVal (PrimitiveFunc _) = "<primitive>"
-showVal func@(Func _ _ _ _) = showFuncs func
-showVal (IOFunc _) = "<IO primitive>"
+showVal (DottedList hd tl) = "(" ++ unwordsList hd ++ " . " ++ showVal tl ++ ")"
+showVal (Vector _ vals) = "#(" ++ unwordsList (IntMap.elems vals) ++ ")"
+showVal (Prim _) = "<primitive>"
+showVal (Func args varargs _ _) = showFuncs args varargs
+showVal (IOPrim _) = "<IO primitive>"
 showVal (Port _) = "<IO port>"
 
 instance Show LispVal where 
     show = showVal
 
-
--- showCharacters :: Char -> String
--- showCharacters '\t' = "#\\tab"
--- showCharacters '\n' = "#\\linefeed"
--- showCharacters '\r' = "#\\return"
--- showCharacters ' '  = "#\\space"
--- showCharacters ch 
---     | ch == chr 0   = "#\\nul"
---     | ch == chr 7   = "#\\alarm"
---     | ch == chr 8   = "#\\backspace"
---     | ch == chr 11  = "#\\vtab"
---     | ch == chr 12  = "#\\page"
---     | ch == chr 27  = "#\\esc"
---     | ch == chr 127 = "#\\delete"
---     | isControl ch  = "#\\^" ++ [chr (ord ch + ord 'A' - 1)]
---     | isPrint ch    = "#\\" ++ [ch]
 
 showCharacters :: Char -> String
 showCharacters '\n' = "#\\newline"
@@ -71,19 +52,19 @@ showCharacters ' '  = "#\\space"
 showCharacters ch   = "#\\" ++ [ch]
 
 unwordsList :: [LispVal] -> String
-unwordsList = unwords . map showVal
+unwordsList = unwords . map show
 
 showLists :: [LispVal] -> String
 showLists contents =
     case contents of
-         [Atom "quote", cont] -> "'" ++ show cont
-         [Atom "quasiquote", cont] -> "`" ++ show cont
-         [Atom "unquote", cont] -> "," ++ show cont
-         [Atom "unquote-splicing", cont] -> ",@" ++ show cont
+         [Symbol "quote", cont] -> "'" ++ show cont
+         [Symbol "quasiquote", cont] -> "`" ++ show cont
+         [Symbol "unquote", cont] -> "," ++ show cont
+         [Symbol "unquote-splicing", cont] -> ",@" ++ show cont
          cont -> "(" ++ unwordsList cont ++ ")"
      
-showFuncs :: LispVal -> String
-showFuncs (Func {params = args, vararg = varargs}) = 
+showFuncs :: [String] -> Maybe String -> String
+showFuncs args varargs = 
     "(lambda (" ++ unwords (map show args) ++ 
         (case varargs of 
             Just arg -> " . " ++ arg 
@@ -97,6 +78,7 @@ data LispError = NumArgs Integer [LispVal]
                | BadSpecialForm String LispVal
                | NotFunction String String
                | UnboundVar String String
+               | VectorBounds Integer Integer
                | Default String
 
 showError :: LispError -> String
@@ -105,6 +87,7 @@ showError (BadSpecialForm message form) = message ++ ": " ++ show form
 showError (NotFunction message func) = message ++ ": " ++ show func
 showError (NumArgs expected found) = "Expected " ++ show expected  ++ " args; found values " ++ unwordsList found
 showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected ++ ", found " ++ show found
+showError (VectorBounds len n) = "Vector index out of bounds: " ++ show n ++ " not in [0.." ++ show (len - 1) ++ "]"
 showError (Parser parseErr) = "Parse error at " ++ show parseErr
 
 instance Show LispError where 
@@ -130,9 +113,6 @@ liftThrows :: ThrowsError a -> IOThrowsError a
 liftThrows (Left err) = throwError err
 liftThrows (Right val) = return val
 
--- runIOThrows :: IOThrowsError String -> IO String
--- runIOThrows action = runErrorT (trapError action) >>= return . extractValue
-
 runIOThrows :: IOThrowsError String -> IO String
 runIOThrows action = do
     traped <- runErrorT (trapError action) 
@@ -143,9 +123,6 @@ type Env = IORef [(String, IORef LispVal)]
 
 nullEnv :: IO Env
 nullEnv = newIORef []
-
--- isBound :: Env -> String -> IO Bool
--- isBound envRef var = readIORef envRef >>= return . maybe False (const True) . lookup var
 
 isBound :: Env -> String -> IO Bool
 isBound envRef var = do
@@ -179,23 +156,16 @@ defineVar envRef var value = do
           env <- readIORef envRef
           writeIORef envRef ((var, valueRef) : env)
           return value
-          
--- bindVars :: Env -> [(String, LispVal)] -> IO Env
--- bindVars envRef bindings = readIORef envRef >>= extendEnv bindings >>= newIORef where 
---     extendEnv bindings env = liftM (++ env) (mapM addBinding bindings)
---     addBinding (var, value) = do 
---         ref <- newIORef value
---         return (var, ref)
 
 bindVars :: Env -> [(String, LispVal)] -> IO Env
 bindVars envRef bindings = do
     env <- readIORef envRef 
     eenv <- extendEnv env bindings
-    newIORef eenv where 
-        extendEnv env bindings = liftM (++ env) (mapM addBinding bindings)
-        addBinding (var, value) = do 
-            ref <- newIORef value
-            return (var, ref)
+    newIORef eenv 
+    where extendEnv env bindings = liftM (++ env) (mapM addBinding bindings)
+          addBinding (var, value) = do 
+              ref <- newIORef value
+              return (var, ref)
             
 
 data EEnv = EEnv Env Integer
