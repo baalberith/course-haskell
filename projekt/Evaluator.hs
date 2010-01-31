@@ -85,7 +85,6 @@ eval eenv (List [Atom "quasiquote", val]) = evalQQ (eeQLIncr eenv) val >>= liftS
 eval _ (List (Atom "unquote" : args)) = throwError $ Default ("naked unquote form: " ++ show args)
 eval _ (List (Atom "unquote-splicing" : args)) = throwError $ Default ("naked unquote-splicing form: " ++ show args)
 
--- eval eenv (List [Atom "apply", fn, args]) = do { (List args') <- eval eenv args; evalFunc eenv $ List (fn:args') }
 eval eenv (List (Atom "apply" : fn : args)) = evalApply eenv fn args
 eval eenv (List (Atom "eval" : args)) = mapM (eval eenv) args >>= mapML (eval eenv)
 
@@ -109,6 +108,8 @@ eval eenv (List (Atom "lambda" : varargs@(Atom _) : body)) = makeVarargs varargs
 
 eval eenv (List (Atom "let" : List params : body)) = evalLet eenv Nothing params body
 eval eenv (List (Atom "let" : Atom name : List params : body)) = evalLet eenv (Just name) params body
+eval eenv (List (Atom "let*" : List params : body)) = evalLet' eenv params body (eeE eenv)
+eval eenv (List (Atom "letrec" : List params : body)) = evalLetRec eenv params body (eeE eenv)        
     
 eval eenv (List (Atom "begin" : args)) = mapML (eval eenv) args
 eval eenv (List [Atom "load", arg]) = eval eenv arg >>= load >>= liftM last . mapM (eval eenv)
@@ -187,30 +188,57 @@ evalCase eenv (cl:cls) k = do
     valMatch k (v:vs) = eqv' [k, v] || valMatch k vs
     valMatch _ [] = False
     
+evalLet :: EEnv -> Maybe String -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
+evalLet eenv maybeName params body = 
+    case maybeName of
+        Just name -> do
+            env' <- liftIO (bindVars (eeE eenv) [(name, def)])
+            func <- makeNormalFunc env' (map exn params) body
+            setVar env' name func
+            mapM (eval eenv . exv) params >>= apply eenv func
+        Nothing -> do
+            func <- makeNormalFunc (eeE eenv) (map exn params) body
+            mapM (eval eenv . exv) params >>= apply eenv func
+    where exn (List [Atom var, _]) = Atom var
+          exv (List [Atom _, val]) = val
+
 -- evalLet :: EEnv -> Maybe String -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
--- evalLet eenv maybeName params body = 
+-- evalLet eenv maybeName params body = do
+--     func <- makeNormalFunc (eeE eenv) (map exn params) body
 --     case maybeName of
 --         Just name -> do
---             env' <- liftIO (bindVars (eeE eenv) [(name, Bool False)])
---             func <- makeNormalFunc env' (map exn params) body
---             setVar env' name func
+--             defineVar (eeE eenv) name func
 --             mapM (eval eenv . exv) params >>= apply eenv func
---         Nothing -> do
---             func <- makeNormalFunc (eeE eenv) (map exn params) body
---             mapM (eval eenv . exv) params >>= apply eenv func
+--         Nothing -> mapM (eval eenv . exv) params >>= apply eenv func
 --     where exn (List [Atom var, _]) = Atom var
 --           exv (List [Atom _, val]) = val
 
-evalLet :: EEnv -> Maybe String -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
-evalLet eenv maybeName params body = do
-    func <- makeNormalFunc (eeE eenv) (map exn params) body
-    case maybeName of
-        Just name -> do
-            defineVar (eeE eenv) name func
-            mapM (eval eenv . exv) params >>= apply eenv func
-        Nothing -> mapM (eval eenv . exv) params >>= apply eenv func
-    where exn (List [Atom var, _]) = Atom var
-          exv (List [Atom _, val]) = val
+evalLet' :: EEnv -> [LispVal] -> [LispVal] -> Env -> IOThrowsError LispVal
+evalLet' eenv [] body env = do
+    let eenv' = eeNewE eenv env 
+    mapML (eval eenv') body
+evalLet' eenv (p:ps) body env = do 
+    let eenv' = eeNewE eenv env
+    val <- eval eenv' (exv p)
+    env' <- liftIO (bindVars env [(exn p, val)])
+    evalLet' eenv ps body env' where
+        exn (List [Atom var, _]) = var
+        exv (List [Atom _, val]) = val
+   
+evalLetRec :: EEnv -> [LispVal] -> [LispVal] -> Env -> IOThrowsError LispVal
+evalLetRec eenv params body env = do 
+    let vars = map exn params
+    env' <- liftIO (bindVars env vars)
+    let eenv' = eeNewE eenv env'
+    vals <- mapM (eval eenv' . exv) params
+    let varvals = bind vars vals
+    mapM_ (set env') varvals 
+    mapML (eval eenv') body where
+        exn (List [Atom var, _]) = (var, def)
+        exv (List [Atom _, val]) = val
+        bind [] [] = []
+        bind ((n, def):ns) (v:vs) = (n, v) : bind ns vs
+        set env (n,v) = setVar env n v
 
 evalFunc :: EEnv -> LispVal -> IOThrowsError LispVal
 evalFunc eenv (List (function : args)) = do 
@@ -240,6 +268,9 @@ getDLh (DottedList h _) = h
 
 getDLt :: LispVal -> LispVal
 getDLt (DottedList _ t) = t
+
+def :: LispVal
+def = Bool False
 
 unq :: String
 unq = " unq"
