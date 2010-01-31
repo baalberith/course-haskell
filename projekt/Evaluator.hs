@@ -184,7 +184,7 @@ evalLet :: EEnv -> Maybe String -> [LispVal] -> [LispVal] -> IOThrowsError LispV
 evalLet eenv maybeName params body = 
     case maybeName of
         Just name -> do
-            env' <- liftIO (bindVars (eeE eenv) [(name, def)])
+            env' <- liftIO (bindVars (eeE eenv) [(name, defaultValue)])
             func <- makeNormalFunc env' (map exn params) body
             setVar env' name func
             mapM (eval eenv . exv) params >>= apply eenv func
@@ -215,10 +215,10 @@ evalLetRec eenv params body env = do
     let varvals = bind vars vals
     mapM_ (set env') varvals 
     mapML (eval eenv') body 
-    where exn (List [Symbol var, _]) = (var, def)
+    where exn (List [Symbol var, _]) = (var, defaultValue)
           exv (List [Symbol _, val]) = val
           bind [] [] = []
-          bind ((n, def):ns) (v:vs) = (n, v) : bind ns vs
+          bind ((n, defaultValue):ns) (v:vs) = (n, v) : bind ns vs
           set env (n,v) = setVar env n v
         
 evalDo :: EEnv -> [LispVal] -> [LispVal] -> [LispVal] -> IOThrowsError LispVal
@@ -322,10 +322,9 @@ evalQQ eenv (Vector n v) = do
     let assoc = zip [0 .. (len - 1)] (liftLUnq vals)
     return $ Vector n (IntMap.fromList assoc)
 evalQQ _ val@_ = return val
-      
-      
-def :: LispVal
-def = Bool False
+
+defaultValue :: LispVal
+defaultValue  = Bool False
         
 isTrue :: LispVal -> Bool
 isTrue (Bool False) = False
