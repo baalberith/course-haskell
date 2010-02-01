@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleContexts #-}
-
 module Library where
 
 import qualified Data.IntMap as IntMap
@@ -9,6 +7,7 @@ import Data.Char hiding (isSymbol, isNumber)
 
 import LispData
 import Parser
+
 
 
 primitives :: [(String , [LispVal] -> ThrowsError LispVal)]
@@ -23,56 +22,19 @@ primitives = [("+", numBinop (+)),
               ("gcd", numBinop gcd),
               ("lcm", numBinop lcm),
               
-              ("symbol?", unaryOp isSymbol),
-              ("string?", unaryOp isString),
-              ("integer?", unaryOp isInteger),
-              ("real?", unaryOp isReal),
-              ("number?", unaryOp isNumber),
-              ("bool?", unaryOp isBool),
-              ("char?", unaryOp isChar), 
-              ("list?", unaryOp isList),
-              ("pair?", unaryOp isPair),
-              ("vector?", unaryOp isVector),
-              ("procedure?", unaryOp isProcedure),
-              ("port?", unaryOp isPort),
-              
-              ("null?", unaryOp isNull),
-              ("zero?", unaryOp isZero),
-              ("positive?", unaryOp isPositive),
-              ("negative?", unaryOp isNegative),
-              ("even?", unaryOp isEven),
-              ("odd?", unaryOp isOdd),
-              
-              ("symbol->string", unaryOp symbol2string),
-              ("string->symbol", unaryOp string2symbol), 
-              ("string->number", unaryOp string2integer),
-              ("number->string", unaryOp integer2string),
-              ("char->string", unaryOp char2string),
-              ("string->char", unaryOp string2char),
-              ("char->integer", unaryOp char2integer),
-              ("integer->char", unaryOp integer2char),
-              
-              ("char-alphabetic?", charIs isAlpha),
-              ("char-numeric?", charIs isDigit),
-              ("char-oct-digit?", charIs isOctDigit),
-              ("char-hex-digit?", charIs isHexDigit),
-              ("char-whitespace?", charIs isSpace),
-              ("char-upper-case?", charIs isUpper),
-              ("char-lower-case?", charIs isLower),
-              ("char-alphanumeric?", charIs isAlphaNum),
-              ("char-control?", charIs isControl),
-              ("char-printable?", charIs isPrint),
-              ("char-upcase", charTo toUpper),
-              ("char-downcase", charTo toLower),
-              ("string-upcase", charTo toUpper),
-              ("string-downcase", charTo toLower),
-              
               ("=", numBoolBinop (==)),
               ("<", numBoolBinop (<)),
               (">", numBoolBinop (>)),
               ("/=", numBoolBinop (/=)),
               (">=", numBoolBinop (>=)),
               ("<=", numBoolBinop (<=)),
+              
+              ("sqrt", fltBinop sqrt),
+              ("exp", fltBinop exp),
+              ("log", fltBinop log),
+              ("sin", fltBinop sin),
+              ("cos", fltBinop cos),
+              ("tan", fltBinop tan),
               
               ("&&", boolBoolBinop (&&)),
               ("||", boolBoolBinop (||)),
@@ -89,13 +51,51 @@ primitives = [("+", numBinop (+)),
               ("char>=?", charBoolBinop (>=)),
               ("char<=?", charBoolBinop (<=)),
               
-              ("sqrt", fltBinop sqrt),
-              ("exp", fltBinop exp),
-              ("log", fltBinop log),
-              ("sin", fltBinop sin),
-              ("cos", fltBinop cos),
-              ("tan", fltBinop tan),
+              ("char-alphabetic?", charIs isAlpha),
+              ("char-numeric?", charIs isDigit),
+              ("char-oct-digit?", charIs isOctDigit),
+              ("char-hex-digit?", charIs isHexDigit),
+              ("char-whitespace?", charIs isSpace),
+              ("char-upper-case?", charIs isUpper),
+              ("char-lower-case?", charIs isLower),
+              ("char-alphanumeric?", charIs isAlphaNum),
+              ("char-control?", charIs isControl),
+              ("char-printable?", charIs isPrint),
               
+              ("char-upcase", charTo toUpper),
+              ("char-downcase", charTo toLower),
+              ("string-upcase", charTo toUpper),
+              ("string-downcase", charTo toLower),
+              
+              ("symbol?", unaryOp isSymbol),
+              ("string?", unaryOp isString),
+              ("integer?", unaryOp isInteger),
+              ("real?", unaryOp isReal),
+              ("number?", unaryOp isNumber),
+              ("bool?", unaryOp isBool),
+              ("char?", unaryOp isChar), 
+              ("list?", unaryOp isList),
+              ("pair?", unaryOp isPair),
+              ("vector?", unaryOp isVector),
+              ("procedure?", unaryOp isProcedure),
+              ("port?", unaryOp isPort),
+              
+              ("symbol->string", unaryOp symbol2string),
+              ("string->symbol", unaryOp string2symbol), 
+              ("string->number", unaryOp string2integer),
+              ("number->string", unaryOp integer2string),
+              ("char->string", unaryOp char2string),
+              ("string->char", unaryOp string2char),
+              ("char->integer", unaryOp char2integer),
+              ("integer->char", unaryOp integer2char),
+              
+              ("null?", unaryOp isNull),
+              ("zero?", unaryOp isZero),
+              ("positive?", unaryOp isPositive),
+              ("negative?", unaryOp isNegative),
+              ("even?", unaryOp isEven),
+              ("odd?", unaryOp isOdd),
+               
               ("eqv?", eqv),
               ("car", car),
               ("cdr", cdr),
@@ -112,16 +112,21 @@ primitives = [("+", numBinop (+)),
               ("vector-ref", lispVecRef)]
               
 
+
 unaryOp :: (LispVal -> LispVal) -> [LispVal] -> ThrowsError LispVal
 unaryOp op [arg] = return $ op arg
 unaryOp _ args = throwError $ NumArgs 1 args
-              
+     
+
+
 numBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
 numBinop _ singleVal@[_] = throwError $ NumArgs 2 singleVal
 numBinop op params = do
     params' <- mapM unpackInt params
     return $ Integer $ foldl1 op params'
-    
+ 
+
+
 fltBinop :: (Double -> Double) -> [LispVal] -> ThrowsError LispVal
 fltBinop op args =
     if length args /= 1
@@ -134,6 +139,8 @@ unpackFltNum :: LispVal -> ThrowsError Double
 unpackFltNum (Integer n) = return $ fromInteger n
 unpackFltNum (Float n) = return n
 unpackFltNum notNum = throwError $ TypeMismatch "number" notNum
+
+
 
 boolBinop :: (LispVal -> ThrowsError a) -> (a -> a -> Bool) -> [LispVal] -> ThrowsError LispVal
 boolBinop unpacker op args = 
@@ -176,6 +183,7 @@ unpackStr (Float n) = return (show n)
 unpackStr notString = throwError $ TypeMismatch "string" notString
 
 
+
 isSymbol, isString, isInteger, isReal, isNumber, isBool, isChar, isList, isPair, isVector, isProcedure, isPort :: LispVal -> LispVal
 isSymbol (Symbol _) = Bool True
 isSymbol _ = Bool False
@@ -207,6 +215,7 @@ isPort (Port _) = Bool True
 isPort _ = Bool False
 
 
+
 isNull :: LispVal -> LispVal
 isNull (List []) = Bool True
 isNull _ = Bool False
@@ -235,15 +244,16 @@ isOdd (Integer n) = Bool $ odd n
 isOdd _ = Bool False
 
 
+
 symbol2string, string2symbol, string2integer, integer2string, char2string, string2char, char2integer, integer2char :: LispVal -> LispVal
-symbol2string (Symbol s)   = String s
-symbol2string _          = String ""
+symbol2string (Symbol s) = String s
+symbol2string _ = String ""
 string2symbol (String s) = Symbol s
-string2symbol _          = Symbol ""
+string2symbol _ = Symbol ""
 string2integer (String s) = Integer $ ((read s) :: Integer)
-string2integer _          = Integer 0
+string2integer _ = Integer 0
 integer2string (Integer n) = String $ show n
-integer2string _          = String ""              
+integer2string _ = String ""              
 char2string (Char c) = String [c]
 char2string _ = String ""
 string2char (String s) = Char $ head s
@@ -254,10 +264,18 @@ integer2char (Integer n) = Char $ head (show n)
 integer2char _ = Char ' '
 
 
+
 charIs :: (Char -> Bool) -> [LispVal] -> ThrowsError LispVal
 charIs op [Char c] = return $ Bool (op c)
+charIs _ [notChar] = throwError $ TypeMismatch "char" notChar
+charIs _ badArgList = throwError $ NumArgs 1 badArgList
+
+charTo :: (Char -> Char) -> [LispVal] -> ThrowsError LispVal
+charTo op [Char char] = return $ Char (op char)
+charTo op [String str] = return $ String (map op str)
 charTo _ [notChar] = throwError $ TypeMismatch "char" notChar
 charTo _ badArgList = throwError $ NumArgs 1 badArgList
+
 
 
 eqv :: [LispVal] -> ThrowsError LispVal
@@ -276,6 +294,8 @@ eqv [(List l1), (List l2)] = return $ Bool $ length l1 == length l2 && all eqvPa
             Right (Bool val) -> val
 eqv [_, _] = return $ Bool False
 eqv badArgList = throwError $ NumArgs 2 badArgList
+
+
 
 car :: [LispVal] -> ThrowsError LispVal
 car [List (x : xs)] = return x
@@ -300,6 +320,7 @@ cons badArgList = throwError $ NumArgs 2 badArgList
 lispNot :: [LispVal] -> ThrowsError LispVal
 lispNot [Bool False] = return $ Bool True
 lispNot _ = return $ Bool False
+
 
 
 lispListFromArgs :: [LispVal] -> ThrowsError LispVal
@@ -349,6 +370,7 @@ lispVecRef [badArg] = throwError $ TypeMismatch "vector + integer" badArg
 lispVecRef badArgList = throwError $ NumArgs 2 badArgList
 
 
+
 ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
 ioPrimitives = [("open-input-file", makePort ReadMode),
                 ("open-output-file", makePort WriteMode),
@@ -359,6 +381,7 @@ ioPrimitives = [("open-input-file", makePort ReadMode),
                 ("read-contents", readContents),
                 ("read-all", readAll)]
  
+
 
 makePort :: IOMode -> [LispVal] -> IOThrowsError LispVal
 makePort mode [String filename] = liftM Port $ liftIO $ openFile filename mode

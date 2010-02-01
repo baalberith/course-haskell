@@ -11,28 +11,39 @@ import Control.Monad.Error
 
 import LispData
 
-
-symbol :: Parser Char
-symbol = oneOf "!$%&*+-/:<=>?@^_~"
-
  
+
+-- komentarz zaczynajacy sie od ; i ciagnacy sie do konca linii
+
 comment :: Parser Char
 comment = do 
     char ';'
     many (noneOf "\r\n")
     return ' '
+    
+-- parsuje co najmniej jedna spacja lub komentarz
 
 spaces :: Parser ()
 spaces = skipMany1 (space <|> comment)
 
 
-namedChar :: Parser Char
-namedChar = do 
-    name <- string "newline"
-        <|> string "space"
-    case name of
-        "newline" -> return '\n'
-        "space" -> return ' '
+
+-- symbole mozliwe do uzycia w nazwie zmiennej
+
+symbol :: Parser Char
+symbol = oneOf "!$%&*+-/:<=>?@^_~"
+    
+-- parsuje nazwe zmiennej (pierwszy znak to litera lub symbol, nastepne moga byc tez cyframi)
+
+parseSymbol :: Parser LispVal
+parseSymbol = do 
+    first <- letter <|> symbol
+    rest <- many (letter <|> digit <|> symbol)
+    return $ Symbol (first:rest)
+
+
+
+-- parsuje mozliwe znaki zaczynajace sie od '\'
 
 escapedChars :: Parser Char
 escapedChars = do 
@@ -45,6 +56,18 @@ escapedChars = do
                 'r'  -> '\r'
                 't'  -> '\t'
     
+-- parsuej string (zaczyna i konczy sie '"' oraz nie zawiera w srodku znakow '\' za wyjatkiem escaped chars)
+
+parseString :: Parser LispVal
+parseString = do 
+    char '"'
+    res <- many $ escapedChars <|> noneOf "\\\""
+    char '"'
+    return $ String res
+    
+
+
+-- funkcje parsujace liczby calkowite o roznych podstawach
 
 parseDigital1 :: Parser LispVal
 parseDigital1 = do 
@@ -79,28 +102,19 @@ parseBin = do
         bin2dig s = bin2dig' 0 s where
             bin2dig' n "" = n
             bin2dig' n (x:xs) = 
-                let n' = 2 * n + toInteger (digitToInt x) 
+                let n' = 2 * n + toInteger (digitToInt x)
                 in bin2dig' n' xs
-    
+ 
+-- parsuje liczbe calkowita
 
-parseSymbol :: Parser LispVal
-parseSymbol = do 
-    first <- letter <|> symbol
-    rest <- many (letter <|> digit <|> symbol)
-    let atom = first:rest
-    return $ Symbol atom
-    
-parseString :: Parser LispVal
-parseString = do 
-    char '"'
-    res <- many $ escapedChars <|> noneOf "\\\""
-    char '"'
-    return $ String res
-    
 parseInteger :: Parser LispVal
 parseInteger = do 
     num <- parseDigital1 <|> parseDigital2 <|> parseHex <|> parseOct <|> parseBin
     return $ num
+
+
+
+-- parsuje liczbe rzeczywista
     
 parseFloat :: Parser LispVal
 parseFloat = do 
@@ -109,6 +123,10 @@ parseFloat = do
     r <- many1 digit
     let res = (fst . head) (readFloat $ n ++ "." ++ r)
     return $ Float res
+    
+
+
+-- parsuje '#t' oraz '#f' (nazwy symboliczne prawdy i falszu)
 
 parseBool :: Parser LispVal
 parseBool = do 
@@ -117,18 +135,39 @@ parseBool = do
     return $ case r of 
                 't' -> Bool True
                 'f' -> Bool False
+                
+
+
+-- parsuje pojedynczy znak
   
 parseCharacter :: Parser Char
 parseCharacter = do
     r <- anyChar
     notFollowedBy alphaNum 
     return r
+    
+-- parsuje znaki specjalne 'newline' oraz 'space'
+    
+namedChar :: Parser Char
+namedChar = do 
+    name <- string "newline"
+        <|> string "space"
+    case name of
+        "newline" -> return '\n'
+        "space" -> return ' '
+        
+-- parsuje znak zaczynajacy sie od '#\'
 
 parseChar :: Parser LispVal
 parseChar = do
     try $ string "#\\"
     value <- try namedChar <|> parseCharacter
     return $ Char value
+    
+
+
+-- parsuje List '(a b c)' lub DottedList '(a b c . d)' (jesli jest to DottedList 
+-- oraz element wystepujacy po '.' to List lub DottedList to splaszczamy go w odpowiedni sposob)
     
 parseList :: Parser LispVal
 parseList = do 
@@ -138,19 +177,23 @@ parseList = do
     tl <- option (List []) (try (char '.' >> spaces >> parseExpr))
     skipMany space
     char ')'
-    if isl tl
-        then return $ List (hd ++ unpl tl)
-        else if isdl tl
-            then return $ DottedList (hd ++ unpdlh tl) (unpdlt tl)
+    if isL tl
+        then return $ List (hd ++ unpackL tl)
+        else if isDL tl
+            then return $ DottedList (hd ++ unpackDLH tl) (unpackDLT tl)
             else return $ DottedList hd tl
-    where isl (List ((Symbol s) : _)) = not $ s == "unquote" || s == "unquote-splicing"
-          isl (List _) = True
-          isl _ = False
-          unpl (List l) = l
-          isdl (DottedList _ _) = True
-          isdl _ = False
-          unpdlh (DottedList h _) = h
-          unpdlt (DottedList _ t) = t
+    where isL (List ((Symbol s):_)) = not $ s == "unquote" || s == "unquote-splicing"
+          isL (List _) = True
+          isL _ = False
+          unpackL (List l) = l
+          isDL (DottedList _ _) = True
+          isDL _ = False
+          unpackDLH (DottedList h _) = h
+          unpackDLT (DottedList _ t) = t
+          
+
+
+-- parsuje wektor zaczynajacy sie od '#(' oraz konczacy ')'
     
 parseVector :: Parser LispVal
 parseVector = do 
@@ -162,6 +205,10 @@ parseVector = do
     let len = length vals
     let assoc = zip [0 .. (len - 1)] vals
     return $ Vector (toInteger len) (IntMap.fromList assoc)
+    
+
+
+-- funcke parsujace wyrazenia zaczynajace sie od ''' (quote), '`' (quasiquate), ',` (unquote), ',@' (unquote-splicing)
     
 parseQuoted :: Parser LispVal
 parseQuoted = do
@@ -191,6 +238,10 @@ parseAnyQuoted :: Parser LispVal
 parseAnyQuoted = try parseUnQuoteSplicing <|> try parseUnQuote <|> try parseQuasiQuoted <|> parseQuoted
 
 
+
+-- parsuje poszczegolne wyrazenia (try przy parsowniu Float oraz Integer bo oba zaczynaja sie od cyfry
+-- oraz przy Integer, Bool, Char, Vector bo moga sie zaczynac od '#')
+
 parseExpr :: Parser LispVal
 parseExpr = parseSymbol
         <|> parseString
@@ -203,6 +254,10 @@ parseExpr = parseSymbol
         <|> parseList
         
     
+
+-- parsuje podany string za pomoca podanego parsera
+-- w przypadku bledu zwraca go opakowanego w LispError
+
 readOrThrow :: Parser a -> String -> ThrowsError a
 readOrThrow parser input = 
     case parse parser "lisp" input of
@@ -210,8 +265,13 @@ readOrThrow parser input =
         Right val -> return val
 
 
+
+-- parsuje pojedyncze wyrazenie
+
 readExpr :: String -> ThrowsError LispVal
 readExpr = readOrThrow parseExpr
+
+-- parsuje liste wyrazen rozdzielonych spacjami lub komentarzami
 
 readExprList :: String -> ThrowsError [LispVal]
 readExprList = readOrThrow (endBy parseExpr spaces)
